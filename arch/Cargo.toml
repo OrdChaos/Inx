@@ -1,0 +1,15 @@
+[package]
+name = "arch"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+strip = true
+
+[dependencies]
+goblin = {version = "0.8.2", features = ["elf32", "elf64", "endian_fd"], default-features = false}
+log = "0.4.21"
+object = "0.36.0"
+rlibc = "1.0.0"
+uefi = { version = "0.28.0", features = ["alloc", "logger", "panic_handler"] }
+uefi-services = "0.25.0"
