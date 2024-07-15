@@ -5,11 +5,11 @@
 use uefi::CStr16;
 use uefi::prelude::*;
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::table::boot::{AllocateType, MemoryType, ScopedProtocol, OpenProtocolParams, OpenProtocolAttributes};
+use uefi::table::boot::{AllocateType, MemoryType, MemoryDescriptor, ScopedProtocol, OpenProtocolParams, OpenProtocolAttributes};
 use uefi::proto::console::gop::*;
 use uefi::fs::FileSystem;
 use goblin::elf::{Elf, program_header};
-use core::{mem, slice};
+use core::{mem, ptr, slice};
 use uefi_services::println;
 
 extern crate alloc;
@@ -23,20 +23,35 @@ pub struct FrameBufferInfo {
     pub stride: u32
 }
 
+#[repr(C)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
+pub struct MemoryMapInfo {
+    pub memory_map: *mut MemoryDescriptor,
+    pub map_size: u64,
+    pub map_desc_size: u64
+}
+
+#[repr(C)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
+pub struct BootInfo {
+    pub frame_buffer: *const FrameBufferInfo,
+    pub memory_map: *const MemoryMapInfo
+}
+
 const UEFI_PAGE_SIZE: usize = 0x1000;
 
 #[entry]
-fn main(_image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
+fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     uefi::helpers::init(&mut system_table).unwrap();
     system_table.stdout().reset(false).unwrap();
     let boot_services = system_table.boot_services();
 
     //File Init
-    let simple_file_system = boot_services.get_image_file_system(_image_handle).unwrap();
+    let simple_file_system = boot_services.get_image_file_system(image_handle).unwrap();
     
     //Load Kernel
     let entry_point_addr = load_kernel(cstr16!("\\kernel.elf"), boot_services, simple_file_system);
-    let entry_point: extern "sysv64" fn(&FrameBufferInfo) -> ! = unsafe { mem::transmute(entry_point_addr) };
+    let entry_point: extern "sysv64" fn(&BootInfo) -> ! = unsafe { mem::transmute(entry_point_addr) };
 
     //Graphic Init
     let frame_buffer_info = get_frame_buffer_info(boot_services);
@@ -44,13 +59,32 @@ fn main(_image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         frame_buffer_info.base_addr,
         frame_buffer_info.screen_width,
         frame_buffer_info.screen_height,
-        frame_buffer_info.stride
+        frame_buffer_info.stride,
     );
 
-    //Exit UEFI Services
-    //...
+    //Exit Boot Services
+    println!("Now Exit the Boot Services");
+    let memory_map_size = boot_services.memory_map_size();
+    let entry_size = memory_map_size.entry_size;
+    let map_size = memory_map_size.map_size;
+    println!("DESC Count: {}", map_size / entry_size);
+    let (_system_table_runtime , _iter) = system_table.exit_boot_services(MemoryType::LOADER_DATA);
 
-    entry_point(&frame_buffer_info);
+    //Memory Map Init
+    let memory_map_descriptors = _iter.get(0).map_or(ptr::null_mut(), |desc| desc as *const _ as *mut MemoryDescriptor);
+    let memory_map = MemoryMapInfo {
+        memory_map: memory_map_descriptors,
+        map_size: map_size as u64,
+        map_desc_size: entry_size as u64
+    };
+
+    let boot_info = BootInfo {
+        frame_buffer: &frame_buffer_info,
+        memory_map: &memory_map
+    };
+
+    //To Kernel
+    entry_point(&boot_info);
 }
 
 fn load_kernel(path: &CStr16, boot_services: &BootServices, simple_file_system: ScopedProtocol<SimpleFileSystem>) -> usize {
